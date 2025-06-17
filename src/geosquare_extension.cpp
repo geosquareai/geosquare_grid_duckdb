@@ -780,23 +780,19 @@ std::string GeosquareExtension::Version() const {
 #else
 	return "";
 #endif
+}
 
+} // namespace duckdb
 
+extern "C" {
 
+DUCKDB_EXTENSION_API void geosquare_init(duckdb::DatabaseInstance &db) {
+    duckdb::DuckDB db_wrapper(db);
+    db_wrapper.LoadExtension<duckdb::GeosquareExtension>();
+}
 
-
-
-
-
-
-
-
-
-
-
-
-
-} // extern "C"}    return duckdb::GeosquareExtension::Version().c_str();DUCKDB_EXTENSION_API const char *geosquare_version() {}    db_wrapper.LoadExtension<duckdb::GeosquareExtension>();    duckdb::DuckDB db_wrapper(db);DUCKDB_EXTENSION_API void geosquare_init(duckdb::DatabaseInstance &db) {extern "C" {} // namespace duckdb}	return duckdb::DuckDB::LibraryVersion();
+DUCKDB_EXTENSION_API const char *geosquare_version() {
+	return duckdb::DuckDB::LibraryVersion();
 }
 }
 
