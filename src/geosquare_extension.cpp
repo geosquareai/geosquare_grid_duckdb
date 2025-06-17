@@ -7,10 +7,17 @@
 #include "duckdb/function/scalar_function.hpp"
 #include "duckdb/main/extension_util.hpp"
 #include <duckdb/parser/parsed_data/create_scalar_function_info.hpp>
+#include "duckdb/function/scalar/string_functions.hpp"
+#include "duckdb/execution/expression_executor.hpp"
 #include <geos/geom/Geometry.h>
 #include <geos/io/WKTReader.h>
 #include <geos/geom/Envelope.h>
 #include <stdexcept>
+#include <sstream>
+#include <algorithm>
+#include <functional>
+#include <unordered_map>
+#include <cmath>
 
 
 namespace duckdb {
@@ -182,6 +189,18 @@ void gidToBoundWkt(const string_t &gid, std::string &wkt) {
     wkt = wkt_temp.str();
 }
 
+// Add overload for std::string parameter
+void gidToBoundWkt(const std::string &gid, std::string &wkt) {
+    // Validate input parameters
+    if (gid.empty()) {
+        throw std::invalid_argument("GID cannot be empty");
+    }
+
+    // Convert std::string to string_t for the existing function
+    string_t gid_str(gid.c_str(), gid.size());
+    gidToBoundWkt(gid_str, wkt);
+}
+
 void _area_ratio(string_t &a, string_t &b, double &area_ratio) {
     try {
         // Convert GIDs to geometries
@@ -239,12 +258,31 @@ void _to_children(const string_t &key, std::vector<std::string> &children) {
     }
 }
 
+// Add overload for std::string parameter
+void _to_children(const std::string &key, std::vector<std::string> &children) {
+    // Validate input parameters
+    if (key.empty()) {
+        throw std::invalid_argument("Key cannot be empty");
+    }
+
+    size_t key_size = key.size();
+    if (key_size >= D.size()) {
+        throw std::out_of_range("Key size is out of range");
+    }
+
+    // Get the alphabet for the current key size
+    const std::vector<char>& alphabet = CODE_ALPHABET_.at(D[key_size]);
+
+    // Generate children keys
+    for (const char& c : alphabet) {
+        children.push_back(key + c);
+    }
+}
+
 string_t _to_parent(string_t &key) {
     if (key.GetSize() > 1) {
-        char *parent = new char[key.GetSize() - 1];
-        memcpy(parent, key.GetData(), key.GetSize() - 1);
-        parent[key.GetSize() - 1] = '\0';
-        return string_t(parent, key.GetSize() - 1);
+        std::string parent_str(key.GetData(), key.GetSize() - 1);
+        return string_t(parent_str);
     } else {
         return key;
     }
@@ -742,19 +780,23 @@ std::string GeosquareExtension::Version() const {
 #else
 	return "";
 #endif
-}
 
-} // namespace duckdb
 
-extern "C" {
 
-DUCKDB_EXTENSION_API void geosquare_init(duckdb::DatabaseInstance &db) {
-    duckdb::DuckDB db_wrapper(db);
-    db_wrapper.LoadExtension<duckdb::GeosquareExtension>();
-}
 
-DUCKDB_EXTENSION_API const char *geosquare_version() {
-	return duckdb::DuckDB::LibraryVersion();
+
+
+
+
+
+
+
+
+
+
+
+
+} // extern "C"}    return duckdb::GeosquareExtension::Version().c_str();DUCKDB_EXTENSION_API const char *geosquare_version() {}    db_wrapper.LoadExtension<duckdb::GeosquareExtension>();    duckdb::DuckDB db_wrapper(db);DUCKDB_EXTENSION_API void geosquare_init(duckdb::DatabaseInstance &db) {extern "C" {} // namespace duckdb}	return duckdb::DuckDB::LibraryVersion();
 }
 }
 
