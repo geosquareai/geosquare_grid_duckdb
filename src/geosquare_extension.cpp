@@ -5,7 +5,7 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/function/scalar_function.hpp"
-#include "duckdb/main/extension_util.hpp"
+#include "duckdb/main/extension/extension_loader.hpp"
 #include <duckdb/parser/parsed_data/create_scalar_function_info.hpp>
 #include "duckdb/function/scalar/string_functions.hpp"
 #include "duckdb/execution/expression_executor.hpp"
@@ -735,40 +735,40 @@ inline void GeosquarepolyfillFull(DataChunk &args, ExpressionState &state, Vecto
         });
 }
 
-static void LoadInternal(DatabaseInstance &instance) {
+static void LoadInternal(ExtensionLoader &loader) {
     auto geosquare_lonlatTOgid_function = ScalarFunction("geosquare_lonlat_to_gid", {LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::INTEGER}, LogicalType::VARCHAR, GeosquarelonlatTOgid);
-    ExtensionUtil::RegisterFunction(instance, geosquare_lonlatTOgid_function);
+    loader.RegisterFunction(geosquare_lonlatTOgid_function);
 
     auto geosquare_gidTOlonlat_function = ScalarFunction("geosquare_gid_to_lonlat", {LogicalType::VARCHAR}, LogicalType::LIST(LogicalType::DOUBLE), GeosquaregidTOlonlat);
-    ExtensionUtil::RegisterFunction(instance, geosquare_gidTOlonlat_function);   
+    loader.RegisterFunction(geosquare_gidTOlonlat_function);   
 
     auto geosquare_gidTOPointWkt_function = ScalarFunction("geosquare_gid_to_point_wkt", {LogicalType::VARCHAR}, LogicalType::VARCHAR, GeosquaregidTOPointWkt);
-    ExtensionUtil::RegisterFunction(instance, geosquare_gidTOPointWkt_function);
+    loader.RegisterFunction(geosquare_gidTOPointWkt_function);
 
     auto geosquare_gidTOBound_function = ScalarFunction("geosquare_gid_to_bound", {LogicalType::VARCHAR}, LogicalType::LIST(LogicalType::DOUBLE), GeosquaregidTOBound);
-    ExtensionUtil::RegisterFunction(instance, geosquare_gidTOBound_function);
+    loader.RegisterFunction(geosquare_gidTOBound_function);
 
     auto geosquare_gidTOBoundWkt_function = ScalarFunction("geosquare_gid_to_bound_wkt", {LogicalType::VARCHAR}, LogicalType::VARCHAR, GeosquaregidTOBoundWkt);
-    ExtensionUtil::RegisterFunction(instance, geosquare_gidTOBoundWkt_function);
+    loader.RegisterFunction(geosquare_gidTOBoundWkt_function);
 
     auto geosquare_to_children = ScalarFunction("geosquare_gid_children", {LogicalType::VARCHAR}, LogicalType::LIST(LogicalType::VARCHAR), Geosquaregid_children);
-    ExtensionUtil::RegisterFunction(instance, geosquare_to_children);
+    loader.RegisterFunction(geosquare_to_children);
 
     auto geosquare_to_parrent = ScalarFunction("geosquare_gid_parent", {LogicalType::VARCHAR}, LogicalType::VARCHAR, Geosquaregid_parent);
-    ExtensionUtil::RegisterFunction(instance, geosquare_to_parrent);
+    loader.RegisterFunction(geosquare_to_parrent);
 
     auto geosquare_polyfill = ScalarFunction("geosquare_polyfill", {LogicalType::VARCHAR, LogicalType::INTEGER}, LogicalType::LIST(LogicalType::VARCHAR), Geosquarepolyfill);
-    ExtensionUtil::RegisterFunction(instance, geosquare_polyfill);
+    loader.RegisterFunction(geosquare_polyfill);
 
     auto geosquare_polyfill_full = ScalarFunction("geosquare_polyfill_full", {LogicalType::VARCHAR, LogicalType::INTEGER}, LogicalType::LIST(LogicalType::VARCHAR), GeosquarepolyfillFull);
-    ExtensionUtil::RegisterFunction(instance, geosquare_polyfill_full);
+    loader.RegisterFunction(geosquare_polyfill_full);
 
     auto geosquare_count_gids = ScalarFunction("geosquare_count_gids", {LogicalType::VARCHAR, LogicalType::INTEGER}, LogicalType::INTEGER, Geosquarecount_gids);
-    ExtensionUtil::RegisterFunction(instance, geosquare_count_gids);
+    loader.RegisterFunction(geosquare_count_gids);
 }
 
-void GeosquareExtension::Load(DuckDB &db) {
-	LoadInternal(*db.instance);
+void GeosquareExtension::Load(ExtensionLoader &db) {
+	LoadInternal(db);
 }
 std::string GeosquareExtension::Name() {
 	return "geosquare";
@@ -786,14 +786,10 @@ std::string GeosquareExtension::Version() const {
 
 extern "C" {
 
-DUCKDB_EXTENSION_API void geosquare_init(duckdb::DatabaseInstance &db) {
-    duckdb::DuckDB db_wrapper(db);
-    db_wrapper.LoadExtension<duckdb::GeosquareExtension>();
+DUCKDB_CPP_EXTENSION_ENTRY(geosquare, loader) {
+	duckdb::LoadInternal(loader);
 }
 
-DUCKDB_EXTENSION_API const char *geosquare_version() {
-	return duckdb::DuckDB::LibraryVersion();
-}
 }
 
 #ifndef DUCKDB_EXTENSION_MAIN
