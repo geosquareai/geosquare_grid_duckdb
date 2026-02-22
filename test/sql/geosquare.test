@@ -8,7 +8,7 @@ require geosquare
 query I
 SELECT geosquare_lonlat_to_gid(106.894082, -6.26109, 14);
 ----
-J3N2M3T8M342
+J3N2M3T8M342H7
 
 # Test geosquare_gid_to_lonlat
 query I
