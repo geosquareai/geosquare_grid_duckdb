@@ -6,6 +6,8 @@ on:
   push:
     tags:
       - 'v*'
+  release:
+    types: [published, edited]
   workflow_dispatch:
 
 concurrency:
