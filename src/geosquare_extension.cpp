@@ -9,9 +9,7 @@
 #include <duckdb/parser/parsed_data/create_scalar_function_info.hpp>
 #include "duckdb/function/scalar/string_functions.hpp"
 #include "duckdb/execution/expression_executor.hpp"
-#include <geos/geom/Geometry.h>
-#include <geos/io/WKTReader.h>
-#include <geos/geom/Envelope.h>
+#include "lightweight_geom.hpp"
 #include <stdexcept>
 #include <sstream>
 #include <algorithm>
@@ -203,26 +201,21 @@ void gidToBoundWkt(const std::string &gid, std::string &wkt) {
 
 void _area_ratio(string_t &a, string_t &b, double &area_ratio) {
     try {
-        // Convert GIDs to geometries
-        std::string geometry_a;
-        gidToBoundWkt(a, geometry_a);
-        std::string geometry_b;
-        gidToBoundWkt(b, geometry_b);
+        BBox bound_a, bound_b;
+        gidToBound(a, bound_a);
+        gidToBound(b, bound_b);
 
-        // Load geometries as GEOS objects
-        geos::io::WKTReader reader;
-        std::unique_ptr<geos::geom::Geometry> geom_a_ptr(reader.read(geometry_a));
-        std::unique_ptr<geos::geom::Geometry> geom_b_ptr(reader.read(geometry_b));
+        double inter_west = std::max(bound_a.west, bound_b.west);
+        double inter_east = std::min(bound_a.east, bound_b.east);
+        double inter_south = std::max(bound_a.south, bound_b.south);
+        double inter_north = std::min(bound_a.north, bound_b.north);
 
-        if (!geom_a_ptr || !geom_b_ptr) {
-            throw std::runtime_error("Failed to read geometries from WKT");
+        double intersection_area = 0.0;
+        if (inter_west < inter_east && inter_south < inter_north) {
+            intersection_area = (inter_east - inter_west) * (inter_north - inter_south);
         }
 
-        // Calculate intersection area
-        std::unique_ptr<geos::geom::Geometry> intersection_geom(geom_a_ptr->intersection(geom_b_ptr.get()));
-        double intersection_area = intersection_geom->getArea();
-
-        double area_a = geom_a_ptr->getArea();
+        double area_a = (bound_a.east - bound_a.west) * (bound_a.north - bound_a.south);
 
         // Calculate area ratio
         if (area_a == 0) {
@@ -253,6 +246,7 @@ void _to_children(const string_t &key, std::vector<std::string> &children) {
     const std::vector<char>& alphabet = CODE_ALPHABET_.at(D[key_size]);
 
     // Generate children keys
+    children.reserve(children.size() + alphabet.size());
     for (const char& c : alphabet) {
         children.push_back(key.GetString() + c);
     }
@@ -274,6 +268,7 @@ void _to_children(const std::string &key, std::vector<std::string> &children) {
     const std::vector<char>& alphabet = CODE_ALPHABET_.at(D[key_size]);
 
     // Generate children keys
+    children.reserve(children.size() + alphabet.size());
     for (const char& c : alphabet) {
         children.push_back(key + c);
     }
@@ -288,23 +283,16 @@ string_t _to_parent(string_t &key) {
     }
 }
 
-int count_max_gids(std::string &geometry, int &level) {
+int count_max_gids(const LightweightGeometry &geom, int &level) {
     try {
-        // Read the geometry from the WKT string
-        geos::io::WKTReader reader;
-        std::unique_ptr<geos::geom::Geometry> geom_ptr(reader.read(geometry));
-
         // Ensure the geometry is valid
-        if (!geom_ptr) {
+        if (geom.is_empty()) {
             throw std::runtime_error("Failed to read geometry from WKT");
         }
 
         // Get the envelope of the geometry
-        const geos::geom::Envelope* envelope = geom_ptr->getEnvelopeInternal();
-        double lat_min = envelope->getMinY();
-        double lat_max = envelope->getMaxY();
-        double lon_min = envelope->getMinX();
-        double lon_max = envelope->getMaxX();
+        double lat_min, lat_max, lon_min, lon_max;
+        geom.get_envelope(lon_min, lat_min, lon_max, lat_max);
 
         // Calculate the grid length
         double gridLength = LON_RANGED_MAX_INIT - LON_RANGED_MIN_INIT;
@@ -323,110 +311,109 @@ int count_max_gids(std::string &geometry, int &level) {
     }
 }
 
-void get_intersect_key(std::string &geometry, const std::string &initial_key, int &resolution, bool parrent, int &max_gids, std::vector<std::string> &contained_keys) {
-    // std::function<void(const std::string&, bool)> func = [&](std::string key, bool approved) {
-    std::vector<std::vector<std::string>> queue;
-    queue.push_back({initial_key, "false"});
+void get_intersect_key(const LightweightGeometry &geom, const std::string &initial_key, int &resolution, bool parrent, int &max_gids, std::vector<std::string> &contained_keys) {
+    std::vector<std::pair<std::string, bool>> queue;
+    queue.reserve(resolution * 25);
+    queue.push_back({initial_key, false});
     while (!queue.empty()) {
-        std::vector<std::string> current = queue.back();
+        auto current = std::move(queue.back());
         queue.pop_back();
-        std::string key = current[0];
-        bool approved = current[1] == "true";
+        std::string key = std::move(current.first);
+        bool approved = current.second;
         if (approved) {
             if (key.length() == resolution) {
-                contained_keys.push_back(key);
+                contained_keys.push_back(std::move(key));
             } else {
                 std::vector<std::string> childrens;
                 _to_children(key, childrens);
-                for (const std::string& child_key : childrens) {
-                    // func(std::string(child_key.c_str(), child_key.size()), true);
-                    queue.push_back({std::string(child_key.c_str(), child_key.size()), "true"});
+                for (std::string& child_key : childrens) {
+                    queue.push_back({std::move(child_key), true});
                 }
             }
         } else {
-            std::string geometry_key;
-            gidToBoundWkt(key, geometry_key);
-            std::unique_ptr<geos::geom::Geometry> geom_key_ptr;
-            std::unique_ptr<geos::geom::Geometry> geom_ptr;
-            std::unique_ptr<geos::geom::Geometry> intersection_geom_ptr;
-
+            BBox bound_key;
             try {
-                geom_key_ptr = std::unique_ptr<geos::geom::Geometry>(geos::io::WKTReader().read(geometry_key));
-                geom_ptr = std::unique_ptr<geos::geom::Geometry>(geos::io::WKTReader().read(geometry));
-                intersection_geom_ptr = std::unique_ptr<geos::geom::Geometry>(geom_ptr->intersection(geom_key_ptr.get()));
+                gidToBound(key, bound_key);
             } catch (const std::exception &e) {
-                throw std::runtime_error(std::string("Error reading geometries: ") + e.what());
+                throw std::runtime_error(std::string("Error generating bound: ") + e.what());
             }
-            double area_ratio = intersection_geom_ptr->getArea() / geom_key_ptr->getArea();
-            if (area_ratio == 0) {
+
+            double geom_key_area = (bound_key.east - bound_key.west) * (bound_key.north - bound_key.south);
+            double intersection_area = LightweightGeometryOperations::get_intersection_area(
+                geom, bound_key.west, bound_key.south, bound_key.east, bound_key.north);
+
+            double area_ratio = intersection_area / geom_key_area;
+            if (area_ratio <= 1e-9) { // Using small epsilon instead of strict 0
                 if (key.length() == 1) {
                     const auto& last_idx = std::find(CODE_ALPHABET_.at(D[0]).begin(), CODE_ALPHABET_.at(D[0]).end(), key[key.length() - 1]) - CODE_ALPHABET_.at(D[0]).begin();
                     if (last_idx < 24 && key.length() == 1) {
                         std::string new_key(&CODE_ALPHABET_.at(D[0]).at(last_idx + 1), 1);
-                        // func(new_key, false);
-                        queue.push_back({new_key, "false"});
+                        queue.push_back({new_key, false});
                     }
                 }
-            } else if (area_ratio == 1) {
-                // func(key, true);
-                queue.push_back({key, "true"});
+            } else if (area_ratio >= 1.0 - 1e-9) { // Using small epsilon for 1.0
+                queue.push_back({std::move(key), true});
             } else if (key.length() == resolution && parrent) {
-                contained_keys.push_back(key);
+                contained_keys.push_back(std::move(key));
             } else if (key.length() == resolution && area_ratio > 0.5 && !parrent) {
-                contained_keys.push_back(key);
+                contained_keys.push_back(std::move(key));
             } else if (key.length() == resolution) {
                 // Do nothing
             } else {
                 std::vector<std::string> childrens;
                 _to_children(key, childrens);
-                for (const std::string& child_key : childrens) {
-                    // func(std::string(child_key.c_str(), child_key.size()), false);
-                    queue.push_back({std::string(child_key.c_str(), child_key.size()), "false"});
+                for (std::string& child_key : childrens) {
+                    queue.push_back({std::move(child_key), false});
                 }
             }
         }
-    };
-
-    // func(initial_key, false);
+    }
 }
 
-void count_intersect_gids(std::string &geometry, const std::string &initial_key, int &resolution, bool parrent, int &counts) {
-    std::function<void(const std::string&, bool)> func = [&](std::string key, bool approved) {
+void count_intersect_gids(const LightweightGeometry &geom, const std::string &initial_key, int &resolution, bool parrent, int &counts) {
+    std::vector<std::pair<std::string, bool>> queue;
+    queue.reserve(resolution * 25);
+    queue.push_back({initial_key, false});
+
+    while (!queue.empty()) {
+        auto current = std::move(queue.back());
+        queue.pop_back();
+        std::string key = std::move(current.first);
+        bool approved = current.second;
+
         if (approved) {
             if (key.length() == resolution) {
                 counts++;
             } else {
                 std::vector<std::string> childrens;
                 _to_children(key, childrens);
-                for (const std::string& child_key : childrens) {
-                    func(std::string(child_key.c_str(), child_key.size()), true);
+                for (std::string& child_key : childrens) {
+                    queue.push_back({std::move(child_key), true});
                 }
             }
         } else {
-            std::string geometry_key;
-            gidToBoundWkt(key, geometry_key);
-            std::unique_ptr<geos::geom::Geometry> geom_key_ptr;
-            std::unique_ptr<geos::geom::Geometry> geom_ptr;
-            std::unique_ptr<geos::geom::Geometry> intersection_geom_ptr;
-
+            BBox bound_key;
             try {
-                geom_key_ptr = std::unique_ptr<geos::geom::Geometry>(geos::io::WKTReader().read(geometry_key));
-                geom_ptr = std::unique_ptr<geos::geom::Geometry>(geos::io::WKTReader().read(geometry));
-                intersection_geom_ptr = std::unique_ptr<geos::geom::Geometry>(geom_ptr->intersection(geom_key_ptr.get()));
+                gidToBound(key, bound_key);
             } catch (const std::exception &e) {
-                throw std::runtime_error(std::string("Error reading geometries: ") + e.what());
+                throw std::runtime_error(std::string("Error generating bound: ") + e.what());
             }
-            double area_ratio = intersection_geom_ptr->getArea() / geom_key_ptr->getArea();
-            if (area_ratio == 0) {
+
+            double geom_key_area = (bound_key.east - bound_key.west) * (bound_key.north - bound_key.south);
+            double intersection_area = LightweightGeometryOperations::get_intersection_area(
+                geom, bound_key.west, bound_key.south, bound_key.east, bound_key.north);
+
+            double area_ratio = intersection_area / geom_key_area;
+            if (area_ratio <= 1e-9) { // Using small epsilon instead of strict 0
                 if (key.length() == 1) {
                     const auto& last_idx = std::find(CODE_ALPHABET_.at(D[0]).begin(), CODE_ALPHABET_.at(D[0]).end(), key[key.length() - 1]) - CODE_ALPHABET_.at(D[0]).begin();
                     if (last_idx < 24 && key.length() == 1) {
                         std::string new_key(&CODE_ALPHABET_.at(D[0]).at(last_idx + 1), 1);
-                        func(new_key, false);
+                        queue.push_back({new_key, false});
                     }
                 }
-            } else if (area_ratio == 1) {
-                func(key, true);
+            } else if (area_ratio >= 1.0 - 1e-9) { // Using small epsilon for 1.0
+                queue.push_back({std::move(key), true});
             } else if (key.length() == resolution && parrent) {
                 counts++;
             } else if (key.length() == resolution && area_ratio > 0.5 && !parrent) {
@@ -436,14 +423,12 @@ void count_intersect_gids(std::string &geometry, const std::string &initial_key,
             } else {
                 std::vector<std::string> childrens;
                 _to_children(key, childrens);
-                for (const std::string& child_key : childrens) {
-                    func(std::string(child_key.c_str(), child_key.size()), false);
+                for (std::string& child_key : childrens) {
+                    queue.push_back({std::move(child_key), false});
                 }
             }
         }
-    };
-
-    func(initial_key, false);
+    }
 }
 
 
@@ -452,6 +437,7 @@ inline void GeosquaregidTOlonlat(DataChunk &args, ExpressionState &state, Vector
     UnaryExecutor::Execute<string_t, list_entry_t>(inputs, result, args.size(),
         [&](string_t gid) {
             list_entry_t result_entry;
+            result_entry.offset = ListVector::GetListSize(result);
             LatLng lonlat;
 
             try {
@@ -477,6 +463,7 @@ inline void GeosquaregidTOBound(DataChunk &args, ExpressionState &state, Vector 
     UnaryExecutor::Execute<string_t, list_entry_t>(inputs, result, args.size(),
         [&](string_t gid) {
             list_entry_t result_entry;
+            result_entry.offset = ListVector::GetListSize(result);
             BBox bound;
 
             try {
@@ -589,12 +576,12 @@ inline void Geosquaregid_children(DataChunk &args, ExpressionState &state, Vecto
     UnaryExecutor::Execute<string_t, list_entry_t>(inputs, result, args.size(),
         [&](string_t key) {
             list_entry_t result_entry;
+            result_entry.offset = ListVector::GetListSize(result);
             std::vector<std::string> children;
             _to_children(key, children);
             for (auto &child : children) {
                 ListVector::PushBack(result, child);
             }
-            auto result_data = FlatVector::GetData<list_entry_t>(result);
             result_entry.length = children.size();
             return result_entry;
         });
@@ -613,10 +600,7 @@ inline void Geosquarecount_gids(DataChunk &args, ExpressionState &state, Vector 
     auto &inputs2 = args.data[1];
     BinaryExecutor::Execute<string_t, int, int>(inputs, inputs2, result, args.size(),
         [&](string_t geometry, int resolution) {
-            // Convert geometry to std::string
             std::string geometry_str(geometry.GetData(), geometry.GetSize());
-
-            // Get the level from the resolution
             int level;
             try {
                 level = size_level.at(resolution);
@@ -624,13 +608,17 @@ inline void Geosquarecount_gids(DataChunk &args, ExpressionState &state, Vector 
                 throw std::runtime_error("Invalid resolution: " + std::to_string(resolution));
             }
 
-            // Define the initial key
-            std::string initial_key(1, '2');
+            LightweightGeometry geom;
+            try {
+                geom = LightweightWKTParser::parse(geometry_str);
+            } catch (const std::exception& e) {
+                throw std::runtime_error("Failed to parse WKT: " + std::string(e.what()));
+            }
 
-            // Get the contained keys using polyfill
+            std::string initial_key(1, '2');
             int counts = 0;
             try {
-                count_intersect_gids(geometry_str, initial_key, level, false, counts);
+                count_intersect_gids(geom, initial_key, level, false, counts);
             } catch (const std::exception &e) {
                 throw std::runtime_error("Error in polyfill: " + std::string(e.what()));
             }
@@ -642,12 +630,10 @@ inline void Geosquarecount_gids(DataChunk &args, ExpressionState &state, Vector 
 inline void Geosquarepolyfill(DataChunk &args, ExpressionState &state, Vector &result) {
     auto &inputs = args.data[0];
     auto &inputs2 = args.data[1];
-    BinaryExecutor::Execute<string_t, int, list_entry_t>(inputs, inputs2, result, args.size(),
-        [&](string_t geometry, int resolution) {
-            // Convert geometry to std::string
+    auto &inputs3 = args.data[2];
+    TernaryExecutor::Execute<string_t, int, bool, list_entry_t>(inputs, inputs2, inputs3, result, args.size(),
+        [&](string_t geometry, int resolution, bool fullcover) {
             std::string geometry_str(geometry.GetData(), geometry.GetSize());
-
-            // Get the level from the resolution
             int level;
             try {
                 level = size_level.at(resolution);
@@ -655,82 +641,33 @@ inline void Geosquarepolyfill(DataChunk &args, ExpressionState &state, Vector &r
                 throw std::runtime_error("Invalid resolution: " + std::to_string(resolution));
             }
 
-            // Count the maximum number of GIDs
-            int max_gids = count_max_gids(geometry_str, level);
+            LightweightGeometry geom;
+            try {
+                geom = LightweightWKTParser::parse(geometry_str);
+            } catch (const std::exception& e) {
+                throw std::runtime_error("Failed to parse WKT: " + std::string(e.what()));
+            }
+
+            int max_gids = count_max_gids(geom, level);
             if (max_gids > 10000000) {
                 throw std::runtime_error("The area is too big or the size is too small");
             }
 
-            // Define the initial key
             std::string initial_key(1, '2');
-
-            // Get the contained keys using polyfill
             std::vector<std::string> contained_keys;
             contained_keys.reserve(max_gids);
             try {
-                get_intersect_key(geometry_str, initial_key, level, false, max_gids, contained_keys);
+                get_intersect_key(geom, initial_key, level, fullcover, max_gids, contained_keys);
             } catch (const std::exception &e) {
                 throw std::runtime_error("Error in polyfill: " + std::string(e.what()));
             }
 
-            // Prepare the result entry
             list_entry_t result_entry;
+            result_entry.offset = ListVector::GetListSize(result);
             for (auto &key : contained_keys) {
                 ListVector::PushBack(result, key);
             }
-
-            // Set the length of the result entry
             result_entry.length = contained_keys.size();
-
-            // Return the result entry
-            return result_entry;
-        });
-}
-
-inline void GeosquarepolyfillFull(DataChunk &args, ExpressionState &state, Vector &result) {
-    auto &inputs = args.data[0];
-    auto &inputs2 = args.data[1];
-    BinaryExecutor::Execute<string_t, int, list_entry_t>(inputs, inputs2, result, args.size(),
-        [&](string_t geometry, int resolution) {
-            // Convert geometry to std::string
-            std::string geometry_str(geometry.GetData(), geometry.GetSize());
-
-            // Get the level from the resolution
-            int level;
-            try {
-                level = size_level.at(resolution);
-            } catch (const std::out_of_range &e) {
-                throw std::runtime_error("Invalid resolution: " + std::to_string(resolution));
-            }
-
-            // Count the maximum number of GIDs
-            int max_gids = count_max_gids(geometry_str, level);
-            if (max_gids > 10000000) {
-                throw std::runtime_error("The area is too big or the size is too small");
-            }
-
-            // Define the initial key
-            std::string initial_key(1, '2');
-
-            // Get the contained keys using polyfill
-            std::vector<std::string> contained_keys;
-            contained_keys.reserve(max_gids);
-            try {
-                get_intersect_key(geometry_str, initial_key, level, true, max_gids, contained_keys);
-            } catch (const std::exception &e) {
-                throw std::runtime_error("Error in polyfill: " + std::string(e.what()));
-            }
-
-            // Prepare the result entry
-            list_entry_t result_entry;
-            for (auto &key : contained_keys) {
-                ListVector::PushBack(result, key);
-            }
-
-            // Set the length of the result entry
-            result_entry.length = contained_keys.size();
-
-            // Return the result entry
             return result_entry;
         });
 }
@@ -757,11 +694,8 @@ static void LoadInternal(ExtensionLoader &loader) {
     auto geosquare_to_parrent = ScalarFunction("geosquare_gid_parent", {LogicalType::VARCHAR}, LogicalType::VARCHAR, Geosquaregid_parent);
     loader.RegisterFunction(geosquare_to_parrent);
 
-    auto geosquare_polyfill = ScalarFunction("geosquare_polyfill", {LogicalType::VARCHAR, LogicalType::INTEGER}, LogicalType::LIST(LogicalType::VARCHAR), Geosquarepolyfill);
+    auto geosquare_polyfill = ScalarFunction("geosquare_polyfill", {LogicalType::VARCHAR, LogicalType::INTEGER, LogicalType::BOOLEAN}, LogicalType::LIST(LogicalType::VARCHAR), Geosquarepolyfill);
     loader.RegisterFunction(geosquare_polyfill);
-
-    auto geosquare_polyfill_full = ScalarFunction("geosquare_polyfill_full", {LogicalType::VARCHAR, LogicalType::INTEGER}, LogicalType::LIST(LogicalType::VARCHAR), GeosquarepolyfillFull);
-    loader.RegisterFunction(geosquare_polyfill_full);
 
     auto geosquare_count_gids = ScalarFunction("geosquare_count_gids", {LogicalType::VARCHAR, LogicalType::INTEGER}, LogicalType::INTEGER, Geosquarecount_gids);
     loader.RegisterFunction(geosquare_count_gids);
