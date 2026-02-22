@@ -1,3 +1,69 @@
 # name: test/sql/geosquare.test
-# description: test geosquare extension
+# description: test geosquare extension logic
 # group: [geosquare]
+
+require geosquare
+
+# Test geosquare_lonlat_to_gid
+query I
+SELECT geosquare_lonlat_to_gid(106.894082, -6.26109, 14);
+----
+J3N2M3T8M342
+
+# Test geosquare_gid_to_lonlat
+query I
+SELECT round(list_extract(geosquare_gid_to_lonlat('J3N2M3T8M342'), 1), 4);
+----
+106.8941
+
+query I
+SELECT round(list_extract(geosquare_gid_to_lonlat('J3N2M3T8M342'), 2), 4);
+----
+-6.2611
+
+# Test geosquare_gid_to_bound
+query I
+SELECT round(list_extract(geosquare_gid_to_bound('J3N2M3T8M342'), 1), 4);
+----
+106.8939
+
+query I
+SELECT round(list_extract(geosquare_gid_to_bound('J3N2M3T8M342'), 4), 4);
+----
+-6.2609
+
+# Test geosquare_gid_to_point_wkt
+query I
+SELECT geosquare_gid_to_point_wkt('J3N2M3T8M342') LIKE 'POINT(106.89408% -6.2611%)';
+----
+true
+
+# Test geosquare_gid_to_bound_wkt
+query I
+SELECT geosquare_gid_to_bound_wkt('J3N2M3T8M342') LIKE 'POLYGON((106.8938% -6.2613%, %))';
+----
+true
+
+# Test geosquare_gid_parent
+query I
+SELECT geosquare_gid_parent('J3N2M3T8M342');
+----
+J3N2M3T8M34
+
+# Test geosquare_gid_children
+query I
+SELECT 'J3N2M3T8M342' IN (SELECT UNNEST(geosquare_gid_children('J3N2M3T8M34')));
+----
+true
+
+# Test geosquare_polyfill (with fullcover=false)
+query I
+SELECT len(geosquare_polyfill('POLYGON((106.8938638928753022 -6.2613474659803572, 106.8943130505173542 -6.2613474659803572, 106.8943130505173542 -6.2608983083383016, 106.8938638928753022 -6.2608983083383016, 106.8938638928753022 -6.2613474659803572))', 5, false)) > 0;
+----
+true
+
+# Test geosquare_count_gids
+query I
+SELECT geosquare_count_gids('POLYGON((106.8938638928753022 -6.2613474659803572, 106.8943130505173542 -6.2613474659803572, 106.8943130505173542 -6.2608983083383016, 106.8938638928753022 -6.2608983083383016, 106.8938638928753022 -6.2613474659803572))', 5) > 0;
+----
+true
