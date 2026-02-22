@@ -26,7 +26,7 @@ jobs:
     uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@main
     with:
       duckdb_version: ${{ github.ref_name }}
-      ci_tools_version: ${{ github.ref_name }}
+      ci_tools_version: main
       extension_name: geosquare
 
   deploy_pages:
