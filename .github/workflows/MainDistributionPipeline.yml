@@ -59,6 +59,11 @@ jobs:
                 cp "$artifact_dir/geosquare.duckdb_extension" "public/$TAG_NAME/$ARCH/geosquare_grid.duckdb_extension"
                 cp "$artifact_dir/geosquare.duckdb_extension" "public/$TAG_NAME/$ARCH/geosquare.duckdb_extension"
               fi
+              # Handle WASM distribution
+              if [ -f "$artifact_dir/geosquare.duckdb_extension.wasm" ]; then
+                cp "$artifact_dir/geosquare.duckdb_extension.wasm" "public/$TAG_NAME/$ARCH/geosquare_grid.duckdb_extension.wasm"
+                cp "$artifact_dir/geosquare.duckdb_extension.wasm" "public/$TAG_NAME/$ARCH/geosquare.duckdb_extension.wasm"
+              fi
             fi
           done
           
