@@ -700,43 +700,6 @@ static void LoadInternal(ExtensionLoader &loader) {
     auto geosquare_count_gids = ScalarFunction("geosquare_count_gids", {LogicalType::VARCHAR, LogicalType::INTEGER}, LogicalType::INTEGER, Geosquarecount_gids);
     loader.RegisterFunction(geosquare_count_gids);
 
-    // Register Dynamic duckdb Spatial Macros natively at load time to avoid GEOMETRY load crash
-    try {
-        duckdb::Connection con(loader.GetDatabaseInstance());
-        
-        // 1. geosquare_gid_to_geom(gid) -> GEOMETRY
-        con.Query("CREATE MACRO IF NOT EXISTS geosquare_gid_to_geom(gid) AS "
-                  "ST_GeomFromText(geosquare_gid_to_bound_wkt(gid));");
-
-        // 2a. geosquare_intersect_parquet(geom, parquet_location, partition_level) -> TABLE (Defaults to 'geometry' column)
-        con.Query("CREATE MACRO IF NOT EXISTS geosquare_intersect_parquet(geom, parquet_location, partition_level) AS TABLE "
-                  "SELECT * FROM read_parquet("
-                  "    flatten(list_transform("
-                  "        geosquare_polyfill(ST_AsText(geom), partition_level, true), "
-                  "        gid -> glob(parquet_location || '/gid=' || gid || '/*.parquet')"
-                  "    ))"
-                  ") WHERE ST_Intersects(geometry, geom);");
-
-        // 2b. geosquare_intersect_parquet(geom, parquet_location, partition_level, geom_col) -> TABLE (Dynamic geometry column)
-        con.Query("CREATE MACRO IF NOT EXISTS geosquare_intersect_parquet(geom, parquet_location, partition_level, geom_col) AS TABLE "
-                  "SELECT * FROM read_parquet("
-                  "    flatten(list_transform("
-                  "        geosquare_polyfill(ST_AsText(geom), partition_level, true), "
-                  "        gid -> glob(parquet_location || '/gid=' || gid || '/*.parquet')"
-                  "    ))"
-                  ") WHERE ST_Intersects(geom_col, geom);");
-        // 2c. geosquare_intersect_parquet(geom, parquet_location, partition_level, partition_column) -> TABLE (Dynamic partition column)
-        con.Query("CREATE MACRO IF NOT EXISTS geosquare_intersect_parquet(geom, parquet_location, partition_level, geom_col, partition_column) AS TABLE "
-                  "SELECT * FROM read_parquet("
-                  "    flatten(list_transform("
-                  "        geosquare_polyfill(ST_AsText(geom), partition_level, true), "
-                  "        gid -> glob(parquet_location || '/' || partition_column || '=' || gid || '/*.parquet')"
-                  "    ))"
-                  ") WHERE ST_Intersects(geom_col, geom);");
-                  
-    } catch (const std::exception &e) {
-        // Skip errors if duckdb context is unavailable during raw extension installation loading phase
-    }
 }
 
 void GeosquareExtension::Load(ExtensionLoader &db) {
