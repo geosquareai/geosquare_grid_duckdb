@@ -56,3 +56,14 @@ SELECT 'J3N2M3T8M342' IN (SELECT UNNEST(geosquare_gid_children('J3N2M3T8M34')));
 ----
 true
 
+# Test geosquare_polyfill_table returns rows
+query I
+SELECT count(*) from geosquare_polyfill_table('POLYGON ((106.851 -6.288, 106.860 -6.288, 106.860 -6.279, 106.851 -6.279, 106.851 -6.288))', 100, true);
+----
+121
+
+# Test geosquare_polyfill_table output column name is gid
+query I
+SELECT gid FROM geosquare_polyfill_table('POLYGON((106.89 -6.27, 106.90 -6.27, 106.90 -6.26, 106.89 -6.26, 106.89 -6.27))', 1000, false) LIMIT 1;
+----
+J3N2M3T8F

@@ -5,6 +5,7 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/function/scalar_function.hpp"
+#include "duckdb/function/table_function.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
 #include <duckdb/parser/parsed_data/create_scalar_function_info.hpp>
 #include "duckdb/function/scalar/string_functions.hpp"
@@ -672,6 +673,91 @@ inline void Geosquarepolyfill(DataChunk &args, ExpressionState &state, Vector &r
         });
 }
 
+
+struct PolyfillBindData : public FunctionData {
+    std::vector<std::string> gids;
+
+    unique_ptr<FunctionData> Copy() const override {
+        auto copy = make_uniq<PolyfillBindData>();
+        copy->gids = gids;
+        return std::move(copy);
+    }
+
+    bool Equals(const FunctionData &other_p) const override {
+        auto &other = other_p.Cast<PolyfillBindData>();
+        return gids == other.gids;
+    }
+};
+
+struct PolyfillGlobalState : public GlobalTableFunctionState {
+    idx_t current_idx = 0;
+};
+
+static unique_ptr<FunctionData> PolyfillBind(ClientContext &context, TableFunctionBindInput &input,
+                                             vector<LogicalType> &return_types, vector<string> &names) {
+    auto result = make_uniq<PolyfillBindData>();
+
+    // Extract parameters
+    auto geometry_str = input.inputs[0].GetValue<string>();
+    auto resolution = input.inputs[1].GetValue<int>();
+    auto fullcover = input.inputs[2].GetValue<bool>();
+
+    // Resolve resolution to level
+    int level;
+    auto it = size_level.find(resolution);
+    if (it == size_level.end()) {
+        throw std::runtime_error("Invalid resolution: " + std::to_string(resolution));
+    }
+    level = it->second;
+
+    // Parse geometry
+    LightweightGeometry geom;
+    try {
+        geom = LightweightWKTParser::parse(geometry_str);
+    } catch (const std::exception &e) {
+        throw std::runtime_error("Failed to parse WKT: " + std::string(e.what()));
+    }
+
+    // Check max GIDs
+    int max_gids = count_max_gids(geom, level);
+    if (max_gids > 10000000) {
+        throw std::runtime_error("The area is too big or the size is too small");
+    }
+
+    // Compute GIDs
+    std::string initial_key(1, '2');
+    result->gids.reserve(max_gids);
+    try {
+        get_intersect_key(geom, initial_key, level, fullcover, max_gids, result->gids);
+    } catch (const std::exception &e) {
+        throw std::runtime_error("Error in polyfill: " + std::string(e.what()));
+    }
+
+    // Define output schema: single column "gid" of type VARCHAR
+    return_types.push_back(LogicalType::VARCHAR);
+    names.push_back("gid");
+
+    return std::move(result);
+}
+
+static unique_ptr<GlobalTableFunctionState> PolyfillInitGlobal(ClientContext &context, TableFunctionInitInput &input) {
+    return make_uniq<PolyfillGlobalState>();
+}
+
+static void PolyfillTableFunction(ClientContext &context, TableFunctionInput &data, DataChunk &output) {
+    auto &bind_data = data.bind_data->Cast<PolyfillBindData>();
+    auto &state = data.global_state->Cast<PolyfillGlobalState>();
+
+    idx_t count = 0;
+    idx_t total = bind_data.gids.size();
+    while (state.current_idx < total && count < STANDARD_VECTOR_SIZE) {
+        output.SetValue(0, count, Value(bind_data.gids[state.current_idx]));
+        state.current_idx++;
+        count++;
+    }
+    output.SetCardinality(count);
+}
+
 static void LoadInternal(ExtensionLoader &loader) {
     auto geosquare_lonlatTOgid_function = ScalarFunction("geosquare_lonlat_to_gid", {LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::INTEGER}, LogicalType::VARCHAR, GeosquarelonlatTOgid);
     loader.RegisterFunction(geosquare_lonlatTOgid_function);
@@ -699,6 +785,11 @@ static void LoadInternal(ExtensionLoader &loader) {
 
     auto geosquare_count_gids = ScalarFunction("geosquare_count_gids", {LogicalType::VARCHAR, LogicalType::INTEGER}, LogicalType::INTEGER, Geosquarecount_gids);
     loader.RegisterFunction(geosquare_count_gids);
+
+    TableFunction polyfill_table("geosquare_polyfill_table",
+        {LogicalType::VARCHAR, LogicalType::INTEGER, LogicalType::BOOLEAN},
+        PolyfillTableFunction, PolyfillBind, PolyfillInitGlobal);
+    loader.RegisterFunction(polyfill_table);
 
 }
 

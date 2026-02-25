@@ -74,6 +74,18 @@ Retrieves a list of GIDs that cover a given WKT geometry at a specified resoluti
 SELECT geosquare_polyfill('POLYGON ((106.851 -6.288, 106.860 -6.288, 106.860 -6.279, 106.851 -6.279, 106.851 -6.288))', 100, true) AS gids;
 ```
 
+#### Geosquare Polyfill Table (`geosquare_polyfill_table`)
+Same as `geosquare_polyfill`, but returns each GID as a separate row instead of a list. This is a **table function**, so it is used in the `FROM` clause and can be directly joined with other tables.
+```sql
+-- Returns one row per GID
+SELECT * FROM geosquare_polyfill_table('POLYGON ((106.851 -6.288, 106.860 -6.288, 106.860 -6.279, 106.851 -6.279, 106.851 -6.288))', 100, true);
+
+-- Easy to JOIN with other tables
+SELECT t.gid, d.value 
+FROM geosquare_polyfill_table('POLYGON (...)', 1000, true) t
+JOIN data_table d ON t.gid = d.gid;
+```
+
 #### Coordinate to Grid (`geosquare_lonlat_to_gid`)
 Convert a longitude and latitude coordinate to a Geosquare GID at a specific level (1-15).
 ```sql
